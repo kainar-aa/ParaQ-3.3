@@ -2,8 +2,6 @@ package kz.paraq;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.Locale;
-import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -41,9 +39,17 @@ public class BookMaintenance {
         long wid=((Number)waiting.get(0).get("id")).longValue(),uid=((Number)waiting.get(0).get("user_id")).longValue();
         Integer active=db.queryForObject("SELECT COUNT(*) FROM reservations WHERE user_id=? AND status IN ('RESERVED','READY','ISSUED')",Integer.class,uid);
         if(active!=null&&active>=3){db.update("UPDATE waitlist SET status='CANCELLED' WHERE id=?",wid);continue;}
-        String qr="PQ-"+UUID.randomUUID().toString().substring(0,12).toUpperCase(Locale.ROOT);
-        db.update("INSERT INTO reservations(user_id,book_id,pickup_day,qr_code,status) VALUES(?,?,?,?,'RESERVED')",uid,bid,java.sql.Date.valueOf(now.plusDays(1)),qr);
-        Long rid=db.queryForObject("SELECT id FROM reservations WHERE qr_code=?",Long.class,qr);
+        var keys=new org.springframework.jdbc.support.GeneratedKeyHolder();
+        db.update(con->{
+          var ps=con.prepareStatement("INSERT INTO reservations(user_id,book_id,pickup_day,status) VALUES(?,?,?,'RESERVED')",java.sql.Statement.RETURN_GENERATED_KEYS);
+          ps.setLong(1,uid);ps.setLong(2,bid);ps.setDate(3,java.sql.Date.valueOf(now.plusDays(1)));
+          return ps;
+        },keys);
+        var generated=keys.getKeys();
+        if(generated==null||generated.isEmpty())throw new IllegalStateException("Reservation ID not generated");
+        Object idValue=generated.get("id");
+        if(idValue==null)idValue=generated.values().iterator().next();
+        long rid=((Number)idValue).longValue();
         db.update("UPDATE waitlist SET status='OFFERED',offer_reservation_id=? WHERE id=?",rid,wid);
         db.update("INSERT INTO notifications(user_id,message_kk,message_ru,message_en) VALUES(?,?,?,?)",uid,"Кезегіңіз келді! Кітапты ертең алыңыз.","Ваша очередь подошла! Заберите книгу завтра.","Your turn! Pick up your book tomorrow.");
       }

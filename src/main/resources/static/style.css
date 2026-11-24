@@ -70,19 +70,3 @@
 :root[data-theme="soft"] .logo-mark{background:#f4eedf;border-color:#c9bbae;}
 @media(max-width:650px){.logo-mark{width:36px;height:36px;border-radius:11px}.logo-mark img{width:32px;height:32px}}
 
-/* ParaQ 3.3: staff-only QR camera and file scanner. */
-.staff-qr-panel{margin:22px 0 24px}
-.staff-qr-head h3{margin:0 0 5px}
-.staff-qr-head p{margin-bottom:18px}
-.staff-qr-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,1fr);gap:20px;align-items:start}
-.staff-qr-camera{border:2px dashed var(--border);background:var(--surface2);border-radius:15px;min-height:245px;aspect-ratio:4/3;max-height:370px;position:relative;overflow:hidden;display:grid;place-items:center}
-.staff-qr-camera video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
-.staff-qr-placeholder{display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px;color:var(--muted);padding:22px}
-.staff-qr-actions{display:grid;gap:13px}
-.staff-qr-actions label{display:grid;gap:6px;font-size:.93rem}
-.staff-qr-buttons{display:flex;flex-wrap:wrap;gap:8px}
-.staff-qr-upload{border:1px solid var(--border);border-radius:12px;padding:10px 13px;background:var(--surface2)}
-.staff-qr-upload input{padding:4px;min-height:auto;width:100%;border:0;background:transparent}
-.staff-qr-result{border:1px solid var(--border);border-radius:12px;background:var(--surface2);padding:13px;min-height:57px;overflow-wrap:anywhere}
-.staff-qr-result strong{color:var(--text)}
-@media(max-width:760px){.staff-qr-layout{grid-template-columns:1fr}.staff-qr-camera{min-height:210px;max-height:330px}.staff-qr-panel{margin-top:15px}}

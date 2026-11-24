@@ -1,8 +1,5 @@
 package kz.paraq;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.MultiFormatWriter;
-import com.google.zxing.client.j2se.MatrixToImageWriter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -14,7 +11,6 @@ import java.util.*;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
-import javax.imageio.ImageIO;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -66,7 +62,6 @@ public class ParaQApi {
   private void lockBook(long bid){single("SELECT id FROM books WHERE id=? FOR UPDATE",bid);}
   private long activeCount(long bid){return id(single("SELECT COUNT(*) AS n FROM reservations WHERE book_id=? AND status IN ('RESERVED','READY','ISSUED')",bid).get("n"));}
   private long openCount(long uid){return id(single("SELECT COUNT(*) AS n FROM reservations WHERE user_id=? AND status IN ('RESERVED','READY','ISSUED')",uid).get("n"));}
-  private String qr(){return "PQ-"+UUID.randomUUID().toString().substring(0,12).toUpperCase(Locale.ROOT);}
   private String text(String x,int max){return x==null?"":x.trim().substring(0,Math.min(x.trim().length(),max));}
 
   @GetMapping("/auth/csrf") public Map<String,String> csrf(HttpServletRequest request){
@@ -197,13 +192,13 @@ public class ParaQApi {
     ensure(openCount(uid)<3,"Maximum three active loans");
     ensure(query("SELECT id FROM reservations WHERE user_id=? AND book_id=? AND status IN ('RESERVED','READY','ISSUED')",uid,bid).isEmpty(),"Already reserved");
     ensure(activeCount(bid)<id(b.get("copies")),"No available copy; join waitlist");
-    String code=qr();long rid=insert("INSERT INTO reservations(user_id,book_id,pickup_day,qr_code,status) VALUES(?,?,?,?,'RESERVED')",uid,bid,java.sql.Date.valueOf(day),code);
+    long rid=insert("INSERT INTO reservations(user_id,book_id,pickup_day,status) VALUES(?,?,?,'RESERVED')",uid,bid,java.sql.Date.valueOf(day));
     notify(uid,"Бронь қабылданды: "+day,"Бронирование подтверждено: "+day,"Reservation confirmed: "+day);
-    return Map.of("id",rid,"qrCode",code,"pickupDay",day.toString(),"status","RESERVED");
+    return Map.of("id",rid,"pickupDay",day.toString(),"status","RESERVED");
   }
   @GetMapping("/reservations") public List<Map<String,Object>> myReservations(Principal p){
     return query("""
-      SELECT r.id,r.book_id,r.pickup_day,r.due_day,r.qr_code,r.status,r.renewed,r.created_at,b.title,b.title_kk,b.title_ru,b.title_en,b.author
+      SELECT r.id,r.book_id,r.pickup_day,r.due_day,r.status,r.renewed,r.created_at,b.title,b.title_kk,b.title_ru,b.title_en,b.author
       FROM reservations r JOIN books b ON b.id=r.book_id WHERE r.user_id=? ORDER BY r.created_at DESC
       """,id(current(p).get("id")));
   }
@@ -250,8 +245,8 @@ public class ParaQApi {
     if(pending.isEmpty())return;
     long wid=id(pending.get(0).get("id")),uid=id(pending.get(0).get("user_id"));
     if(openCount(uid)>=3){db.update("UPDATE waitlist SET status='CANCELLED' WHERE id=?",wid);offerNext(bid);return;}
-    String code=qr();LocalDate pickup=today().plusDays(1);
-    long rid=insert("INSERT INTO reservations(user_id,book_id,pickup_day,qr_code,status) VALUES(?,?,?,?,'RESERVED')",uid,bid,java.sql.Date.valueOf(pickup),code);
+    LocalDate pickup=today().plusDays(1);
+    long rid=insert("INSERT INTO reservations(user_id,book_id,pickup_day,status) VALUES(?,?,?,'RESERVED')",uid,bid,java.sql.Date.valueOf(pickup));
     db.update("UPDATE waitlist SET status='OFFERED',offer_reservation_id=? WHERE id=?",rid,wid);
     notify(uid,"Кезегіңіз келді! Алу күні: "+pickup,"Ваша очередь подошла! Дата: "+pickup,"Your book is ready! Pickup: "+pickup);
   }
@@ -261,44 +256,18 @@ public class ParaQApi {
   @PostMapping("/notifications/read") public Map<String,Object> readNotifications(Principal p){
     db.update("UPDATE notifications SET seen=TRUE WHERE user_id=?",id(current(p).get("id")));return Map.of("ok",true);
   }
-  @GetMapping(value="/reservations/{rid}/qr",produces=MediaType.IMAGE_PNG_VALUE) public byte[] qrImage(@PathVariable long rid,Principal p)throws Exception{
-    var me=current(p);var r=single("SELECT user_id,qr_code FROM reservations WHERE id=?",rid);
-    if(id(r.get("user_id"))!=id(me.get("id"))&&!List.of("ADMIN","LIBRARIAN").contains(me.get("role")))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Not your reservation");
-    var code=new MultiFormatWriter().encode((String)r.get("qr_code"),BarcodeFormat.QR_CODE,250,250);
-    ByteArrayOutputStream o=new ByteArrayOutputStream();ImageIO.write(MatrixToImageWriter.toBufferedImage(code),"PNG",o);return o.toByteArray();
-  }
-
-  // QR verification is staff-only. Scanning NEVER automatically issues or returns a book.
-  @PostMapping(value="/staff/qr/decode",consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
-  public Map<String,String> staffQrDecode(Principal p,@RequestPart("image") MultipartFile image) throws IOException{
-    staff(p);
-    ensure(image!=null && !image.isEmpty() && image.getSize()<=2_000_000,"Image must be 2 MB or smaller");
-    String mime=image.getContentType();
-    ensure("image/jpeg".equals(mime)||"image/png".equals(mime),"Choose a JPEG or PNG QR image");
-    return Map.of("code",QrScanner.decode(image.getBytes()));
-  }
-  @GetMapping("/staff/qr/lookup") public Map<String,Object> staffQrLookup(Principal p,@RequestParam String code){
-    staff(p);
-    ensure(code!=null&&code.trim().matches("(?i)PQ-[0-9a-f]{12}"),"Invalid QR code");
-    return single("""
-      SELECT r.id,r.qr_code,r.status,r.pickup_day,r.due_day,b.title,u.full_name,u.username
-      FROM reservations r JOIN books b ON b.id=r.book_id JOIN app_users u ON u.id=r.user_id
-      WHERE r.qr_code=?
-      """,code.trim().toUpperCase(Locale.ROOT));
-  }
-
   @GetMapping("/staff/reservations") public List<Map<String,Object>> staffReservations(Principal p){
     staff(p);return query("""
-      SELECT r.id,r.pickup_day,r.due_day,r.status,r.qr_code,r.book_id,b.title,u.full_name,u.phone,u.username
+      SELECT r.id,r.pickup_day,r.due_day,r.status,r.book_id,b.title,u.full_name,u.phone,u.username
       FROM reservations r JOIN books b ON r.book_id=b.id JOIN app_users u ON u.id=r.user_id
       ORDER BY r.created_at DESC LIMIT 300
       """);
   }
-  public record StaffAction(String code,String condition){}
+  public record StaffAction(Long reservationId,String condition){}
   @PostMapping("/staff/issue") @Transactional public Map<String,Object> issue(Principal p,@RequestBody StaffAction x){
-    long actor=id(staff(p).get("id"));ensure(x!=null&&x.code()!=null&&x.code().startsWith("PQ-"),"Enter QR code");
-    var pre=single("SELECT book_id FROM reservations WHERE qr_code=?",x.code().trim());lockBook(id(pre.get("book_id")));
-    var r=single("SELECT id,user_id,status,pickup_day FROM reservations WHERE qr_code=? FOR UPDATE",x.code().trim());
+    long actor=id(staff(p).get("id"));ensure(x!=null&&x.reservationId()!=null&&x.reservationId()>0,"Select a reservation ID");
+    var pre=single("SELECT book_id FROM reservations WHERE id=?",x.reservationId());lockBook(id(pre.get("book_id")));
+    var r=single("SELECT id,user_id,status,pickup_day FROM reservations WHERE id=? FOR UPDATE",x.reservationId());
     ensure(List.of("RESERVED","READY").contains(r.get("status")),"Not an active reservation");
     ensure(!((java.sql.Date)r.get("pickup_day")).toLocalDate().isAfter(today()),"Pickup day has not arrived");
     long rid=id(r.get("id"));LocalDate due=today().plusDays(14);
@@ -308,11 +277,11 @@ public class ParaQApi {
     return Map.of("ok",true,"dueDay",due.toString());
   }
   @PostMapping("/staff/return") @Transactional public Map<String,Object> returned(Principal p,@RequestBody StaffAction x){
-    long actor=id(staff(p).get("id"));ensure(x!=null&&x.code()!=null,"QR code required");
+    long actor=id(staff(p).get("id"));ensure(x!=null&&x.reservationId()!=null&&x.reservationId()>0,"Select a reservation ID");
     String condition=x.condition()==null?"GOOD":x.condition().toUpperCase(Locale.ROOT);
     ensure(List.of("GOOD","DAMAGED","LOST").contains(condition),"Condition must be GOOD/DAMAGED/LOST");
-    var pre=single("SELECT book_id FROM reservations WHERE qr_code=?",x.code().trim());long bid=id(pre.get("book_id"));lockBook(bid);
-    var r=single("SELECT id,user_id,status FROM reservations WHERE qr_code=? FOR UPDATE",x.code().trim());ensure("ISSUED".equals(r.get("status")),"Book is not issued");
+    var pre=single("SELECT book_id FROM reservations WHERE id=?",x.reservationId());long bid=id(pre.get("book_id"));lockBook(bid);
+    var r=single("SELECT id,user_id,status FROM reservations WHERE id=? FOR UPDATE",x.reservationId());ensure("ISSUED".equals(r.get("status")),"Book is not issued");
     long rid=id(r.get("id"));db.update("UPDATE reservations SET status='RETURNED',updated_at=CURRENT_TIMESTAMP WHERE id=?",rid);
     if(!"GOOD".equals(condition))db.update("UPDATE books SET copies=CASE WHEN copies>0 THEN copies-1 ELSE 0 END WHERE id=?",bid);
     audit(actor,"RETURN_BOOK","RESERVATION",rid,condition);
